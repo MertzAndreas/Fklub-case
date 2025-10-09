@@ -4,7 +4,7 @@ import pygrametl
 from pygrametl.datasources import SQLSource 
 from pygrametl.tables import CachedDimension, FactTable
 
-pgconn = psycopg2.connect(
+fklub = psycopg2.connect(
     host="localhost",
     port=5432,
     dbname="stregsystem",
@@ -12,19 +12,33 @@ pgconn = psycopg2.connect(
     password="mypassword"
 )
 
-connection = pygrametl.ConnectionWrapper(pgconn)
-connection.setasdefault()
-connection.execute('set search_path to stregsystem')
+warehouse = psycopg2.connect(
+    host="localhost",
+    port=5432,
+    dbname="warehouse",
+    user="myuser",
+    password="mypassword"
+)
 
+
+connection_f = pygrametl.ConnectionWrapper(fklub)
+connection_w = pygrametl.ConnectionWrapper(warehouse)
+connection_w.setasdefault()
+
+connection_f.execute('set search_path to stregsystem')
+
+
+name_mapping = 'time', 'product', 'member', 'sale'
 sale_query = "SELECT * FROM stregsystem_sale"
-sale_source = SQLSource(connection=connection, query=sale_query)
+sale_source = SQLSource(connection=connection_f, query=sale_query, names=name_mapping)
 
 
 
 time_dimension = CachedDimension(
         name='time',
         key='time_id',
-        attributes=['day', 'month', 'year', 'week', 'weekyear'],)
+        attributes=['day', 'month', 'year', 'week', 'weekyear']
+        )
 
 product_dimension = CachedDimension(
         name='product',
@@ -56,5 +70,5 @@ for row in sale_source:
     dateTransform(row) 
     print(row)       
 
-connection.commit()
-connection.close()
+connection_f.commit()
+connection_f.close()
