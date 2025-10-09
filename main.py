@@ -57,25 +57,45 @@ fact_table = FactTable(
 
 
 name_mapping = 'time', 'product', 'member', 'sale'
-sale_query = "SELECT * FROM stregsystem_sale"
-sale_source = SQLSource(connection=connection_f, query=sale_query)
-
-
-def dateTransform(row):
-    date: datetime = row['timestamp']
-    newRow = dict()
-    newRow['day'] = date.day
-    newRow['month'] = date.month
-    newRow['year'] = date.year
-    newRow['week'] = date.isocalendar()[1]
-    newRow['weekyear'] = date.isocalendar()[0]
-    time_dimension.insert(newRow)
 
 
 
-for row in sale_source:
-    dateTransform(row)
 
+
+
+def createDateShit():
+    time_query = "SELECT * FROM stregsystem_sale"
+    time_source = SQLSource(connection=connection_f, query=time_query)
+    def dateTransform(row):
+        date: datetime = row['timestamp']
+        newRow = dict()
+        newRow['day'] = date.day
+        newRow['month'] = date.month
+        newRow['year'] = date.year
+        newRow['week'] = date.isocalendar()[1]
+        newRow['weekyear'] = date.isocalendar()[0]
+        time_dimension.ensure(newRow)
+    for row in time_source:
+        dateTransform(row)
+
+
+
+
+def createMemberShit():
+    member_query = "SELECT * FROM stregsystem_member"
+    member_source = SQLSource(connection=connection_f, query=member_query)
+    def memberTransform(row):
+        newRow = dict()
+        newRow['active'] = row['active']
+        newRow['account_created'] = row['year']
+        newRow['gender'] = row['gender']
+        newRow['balance'] = row['balance']
+        member_dimension.ensure(newRow)
+    for row in member_source:
+        memberTransform(row)
+
+createMemberShit()
+createDateShit()
 
 connection_f.commit()
 connection_f.close()

@@ -31,7 +31,7 @@ def create_warehouse_tables(connection_w : ConnectionWrapper):
         CREATE TABLE IF NOT EXISTS member (
             member_id SERIAL PRIMARY KEY,
             active BOOLEAN,
-            account_created DATE,
+            account_created INTEGER,
             gender TEXT,
             balance NUMERIC
         )
