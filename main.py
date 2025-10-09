@@ -25,7 +25,18 @@ connection_f = pygrametl.ConnectionWrapper(fklub)
 connection_w = pygrametl.ConnectionWrapper(warehouse)
 connection_f.execute('SET search_path TO stregsystem')
 
+
+# DELETE WAREHOUSE TABLES IF THEY EXIST
+connection_w.execute("DROP TABLE IF EXISTS sale")
+connection_w.execute("DROP TABLE IF EXISTS time")
+connection_w.execute("DROP TABLE IF EXISTS product")
+connection_w.execute("DROP TABLE IF EXISTS member")
+connection_w.commit()
+
 create_warehouse_tables(connection_w)
+
+
+
 
 time_dimension = CachedDimension(
     name='time',
@@ -77,9 +88,6 @@ def createDateShit():
         time_dimension.ensure(newRow)
     for row in time_source:
         dateTransform(row)
-
-
-
 
 def createMemberShit():
     member_query = "SELECT * FROM stregsystem_member"
