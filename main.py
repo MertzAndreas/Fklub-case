@@ -2,6 +2,7 @@ from datetime import datetime
 import psycopg2
 import pygrametl
 from pygrametl.datasources import SQLSource 
+from pygrametl.tables import CachedDimension, FactTable
 
 pgconn = psycopg2.connect(
     host="localhost",
@@ -17,6 +18,30 @@ connection.execute('set search_path to stregsystem')
 
 sale_query = "SELECT * FROM stregsystem_sale"
 sale_source = SQLSource(connection=connection, query=sale_query)
+
+
+
+time_dimension = CachedDimension(
+        name='time',
+        key='time_id',
+        attributes=['day', 'month', 'year', 'week', 'weekyear'],)
+
+product_dimension = CachedDimension(
+        name='product',
+        key='product_id',
+        attributes=['product_name', 'type', 'category', 'price', 'from', 'to'])
+
+member = CachedDimension(
+        name='member',
+        key='member_id',
+        attributes=['active', 'account_created', 'gender', 'balance']
+        )
+
+fact_table = FactTable(
+        name='sale',
+        keyrefs=['time_id', 'product_id', 'member_id'],
+        measures=['sale'])
+
 
 def dateTransform(row):
     """Adds date parts to the row dictionary."""
