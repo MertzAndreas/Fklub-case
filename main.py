@@ -1,8 +1,10 @@
-from datetime import datetime
 import psycopg2
 import pygrametl
-from pygrametl.datasources import SQLSource 
+from pygrametl.datasources import SQLSource
 from pygrametl.tables import CachedDimension, FactTable
+from datetime import datetime
+from warehouse_tables import create_warehouse_tables
+
 
 fklub = psycopg2.connect(
     host="localhost",
@@ -11,7 +13,6 @@ fklub = psycopg2.connect(
     user="myuser",
     password="mypassword"
 )
-
 warehouse = psycopg2.connect(
     host="localhost",
     port=5432,
@@ -20,55 +21,63 @@ warehouse = psycopg2.connect(
     password="mypassword"
 )
 
-
 connection_f = pygrametl.ConnectionWrapper(fklub)
 connection_w = pygrametl.ConnectionWrapper(warehouse)
-connection_w.setasdefault()
+connection_f.execute('SET search_path TO stregsystem')
 
-connection_f.execute('set search_path to stregsystem')
+create_warehouse_tables(connection_w)
+
+time_dimension = CachedDimension(
+    name='time',
+    key='time_id',
+    attributes=['day', 'month', 'year', 'week', 'weekyear'],
+    targetconnection=connection_w
+)
+
+product_dimension = CachedDimension(
+    name='product',
+    key='product_id',
+    attributes=['product_name', 'type', 'category', 'price', 'from', 'to'],
+    targetconnection=connection_w
+)
+
+member_dimension = CachedDimension(
+    name='member',
+    key='member_id',
+    attributes=['active', 'account_created', 'gender', 'balance'],
+    targetconnection=connection_w
+)
+
+fact_table = FactTable(
+    name='sale',
+    keyrefs=['time_id', 'product_id', 'member_id'],
+    measures=['sale'],
+    targetconnection=connection_w
+)
 
 
 name_mapping = 'time', 'product', 'member', 'sale'
 sale_query = "SELECT * FROM stregsystem_sale"
-sale_source = SQLSource(connection=connection_f, query=sale_query, names=name_mapping)
-
-
-
-time_dimension = CachedDimension(
-        name='time',
-        key='time_id',
-        attributes=['day', 'month', 'year', 'week', 'weekyear']
-        )
-
-product_dimension = CachedDimension(
-        name='product',
-        key='product_id',
-        attributes=['product_name', 'type', 'category', 'price', 'from', 'to'])
-
-member = CachedDimension(
-        name='member',
-        key='member_id',
-        attributes=['active', 'account_created', 'gender', 'balance']
-        )
-
-fact_table = FactTable(
-        name='sale',
-        keyrefs=['time_id', 'product_id', 'member_id'],
-        measures=['sale'])
+sale_source = SQLSource(connection=connection_f, query=sale_query)
 
 
 def dateTransform(row):
-    """Adds date parts to the row dictionary."""
     date: datetime = row['timestamp']
-    row['day'] = date.day
-    row['month'] = date.month
-    row['year'] = date.year
-    row['week'] = date.isocalendar()[1]
-    row['weekyear'] = date.isocalendar()[0]
+    newRow = dict()
+    newRow['day'] = date.day
+    newRow['month'] = date.month
+    newRow['year'] = date.year
+    newRow['week'] = date.isocalendar()[1]
+    newRow['weekyear'] = date.isocalendar()[0]
+    time_dimension.insert(newRow)
+
+
 
 for row in sale_source:
-    dateTransform(row) 
-    print(row)       
+    dateTransform(row)
+
 
 connection_f.commit()
 connection_f.close()
+connection_w.commit()
+connection_w.close()
