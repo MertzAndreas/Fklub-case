@@ -23,8 +23,9 @@ def create_warehouse_tables(connection_w : ConnectionWrapper):
             type TEXT,
             category TEXT,
             price NUMERIC,
-            "from" DATE,
-            "to" DATE
+            from_date DATE,
+            to_date DATE,
+            version INTEGER
         )
         """,
         """
