@@ -4,7 +4,7 @@ from pygrametl.datasources import SQLSource
 from pygrametl.tables import CachedDimension, FactTable, SCDimension
 from datetime import datetime
 from warehouse_tables import create_warehouse_tables
-
+import re
 
 fklub = psycopg2.connect(
     host="localhost",
@@ -118,18 +118,13 @@ def createProductShit():
             ON pc.category_id = c.id
         LEFT JOIN stregsystem.stregsystem_oldprice AS oldprice
             ON p.id = oldprice.product_id
-        WHERE c.id != 5 OR c.id IS NULL
     """
 
     member_source = SQLSource(connection=connection_f, query=product_query)
 
-    def productTypeToCategory(type: str | None) -> str:
+    def productTypeToCategory(type: str) -> str:
         if type == "Alkoholdie varer": 
             raise ValueError("Alkoholdie varer should not be in the dataset")
-        if type == "Event":
-            exit(1)
-        if type is None:
-            return "Ukategoriseret"
         cases = {
             "Sodavand" : "Sodavand",
             "Vitamin Vand" : "Andet",
@@ -139,17 +134,59 @@ def createProductShit():
             "Hård spiritus": "Spiritus", 
             "Spiritus": "Spiritus",  
             "Spiselige varer": "Mad", 
-            "Energidrik": "Koffein", 
+            "Energidrik": "Koffein",
+            "Mælk": "Andet",
+            "Events" : "Events",
+            "Andet": "Andet",
+            "Mad": "Mad",
+            "Ukategoriseret": "Ukategoriseret"
         }
         return cases[type]
-
+    
+    def inferTypeFromName(name: str) -> str:
+        name = name.lower()
+        keywords = [
+            (["stripper kassen", "football",  "f-dag", "f-lan", "f-julefrokost", "f-sportsdag", "f-acking", "kandidat", "kort fyttetur - 2 dage", "island tilbud!", "feaster", "famlefest", "special hyttetur", "fastelavn", "fragelse", "gratis foobar", "fredagsfranskbrød", "konsulent for en aften", "kamstrup foobar", "arrangement", "svedhytte"], "Events"),
+            (["øl", "oe", "beer", "carlsberg", "porter", "weiser", "ale", "tuborg", "humle"], "Øl"),
+            (["whisky", "whiskey", "vodka", "gin", "rom", "rum", "snaps"], "Hård spiritus"),
+            (["vin", "alkohol", "cider", "somersby"], "Spiritus"),
+            (["cola", "fanta", "sodavand", "soda"], "Sodavand"),
+            (["kaffe"], "Kaffe"),
+            (["energi", "energy", "red bull", "x-ray",  "one engergydrink", "jolt"], "Energidrik"),
+            (["vand", "water"], "Vitamin Vand"),
+            (["mælk", "milk", "skumme", "cultura", "yoghurt", "kakao", "cacao", "cocio"], "Mælk"),
+            (["brød", "popcorn", "barbells", "barebells", "chokolade", "slik", "chips", "saltstænger", "hotdog"], "Mad"),
+            (["juice", "æblemost", "ingefær", "pant"], "Andet"),
+        ]
+        for keys, type_name in keywords:
+            if any(k in name for k in keys):
+                return type_name
+        return "Ukategoriseret"
+    
+    def removeHTMLTags(str: str) -> str:
+        clean = re.compile('<.*?>')
+        return re.sub(clean, '', str)
+    
+    def normaliseLiter(str: str) -> str:
+        if "½L" in str:
+            return str.replace("½L", "500ml")
+        if "¼L" in str:
+            return str.replace("¼L", "250ml")
+        if "1L" in str:
+            return str.replace("1L", "1000ml")
+        return str
 
     def productTransform(row):
         newRow = dict()
+        name = removeHTMLTags(row['product_name'])
+        name = normaliseLiter(name)
+
         type = row['category']
+        if type == None:
+            type = inferTypeFromName(name)
         newRow['type'] = type
         newRow['category'] = productTypeToCategory(type)
-        newRow['product_name'] = row['product_name']
+        newRow['product_name'] = name
         newRow['price'] = row['price'] 
         newRow['from_date'] = row['changed_on'] or datetime.now().date()
         newRow['to_date'] = None
@@ -157,10 +194,12 @@ def createProductShit():
 
 
     for row in member_source:
-        print(row)
         productTransform(row)
 
 createProductShit()
+
+
+
 
 connection_f.commit()
 connection_f.close()
