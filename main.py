@@ -206,4 +206,5 @@ createProductShit()
 connection_f.commit()
 connection_f.close()
 connection_w.commit()
+connection_w.close()
 
