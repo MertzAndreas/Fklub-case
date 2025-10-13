@@ -65,26 +65,30 @@ member_dimension = CachedDimension(
 
 fact_table = FactTable(
     name='sale',
-    keyrefs=['time_id', 'product_id', 'member_id'],
+    keyrefs=['time_id', 'product_sk', 'member_id'],
     measures=['sale'],
     targetconnection=connection_w
 )
 
 
+def dateTransform(date):
+    newRow = dict()
+    newRow['day'] = date.day
+    newRow['month'] = date.month
+    newRow['year'] = date.year
+    newRow['week'] = date.isocalendar()[1]
+    newRow['weekyear'] = date.isocalendar()[0]
+    return newRow
+
 def createDateShit():
     time_query = "SELECT * FROM stregsystem_sale"
     time_source = SQLSource(connection=connection_f, query=time_query)
-    def dateTransform(row):
+    def dateTransformv2(row):
         date: datetime = row['timestamp']
-        newRow = dict()
-        newRow['day'] = date.day
-        newRow['month'] = date.month
-        newRow['year'] = date.year
-        newRow['week'] = date.isocalendar()[1]
-        newRow['weekyear'] = date.isocalendar()[0]
-        time_dimension.ensure(newRow)
+        date_row = dateTransform(date)
+        time_dimension.ensure(date_row)
     for row in time_source:
-        dateTransform(row)
+        dateTransformv2(row)
 
 def createMemberShit():
     member_query = "SELECT * FROM stregsystem_member"
@@ -94,32 +98,41 @@ def createMemberShit():
         newRow['active'] = row['active']
         newRow['account_created'] = row['year']
         newRow['gender'] = row['gender']
-        newRow['balance'] = row['balance']
+        newRow['balance'] = row['balance'] / 100
         member_dimension.ensure(newRow)
     for row in member_source:
         memberTransform(row)
+    
+    member_dimension.insert({'member_id': 99999999, 'active': False, 'account_created': 1970, 'gender': 'U', 'balance': 0.0})
 
-#createMemberShit()
-#createDateShit()
+createMemberShit()
+connection_f.commit()
+connection_w.commit()
+createDateShit()
+connection_f.commit()
+connection_w.commit()
 
 
 def createProductShit():
     product_query = """
-        SELECT 
-            p.id AS product_id,
-            p.name AS product_name,
-            c.name AS category,
-            -- use oldprice.price when present (historical value), otherwise current product price
-            COALESCE(oldprice.price, p.price) AS price,
-            oldprice.changed_on AS changed_on
-        FROM stregsystem.stregsystem_product AS p
-        LEFT JOIN stregsystem.stregsystem_product_categories AS pc 
-            ON p.id = pc.product_id AND pc.category_id != 10
-        LEFT JOIN stregsystem.stregsystem_category AS c 
-            ON pc.category_id = c.id
-        LEFT JOIN stregsystem.stregsystem_oldprice AS oldprice
-            ON p.id = oldprice.product_id
-        ORDER BY p.id, oldprice.changed_on ASC NULLS LAST
+    WITH one_category AS (
+        SELECT DISTINCT ON (pc.product_id)
+            pc.product_id,
+            pc.category_id
+        FROM stregsystem.stregsystem_product_categories pc
+        ORDER BY pc.product_id, pc.category_id
+    )
+
+    SELECT
+        p.id AS product_id,
+        p.name AS product_name,
+        c.name AS category,
+        COALESCE(oldprice.price, p.price) AS price,
+        oldprice.changed_on AS changed_on
+    FROM stregsystem.stregsystem_product AS p
+    LEFT JOIN one_category oc ON p.id = oc.product_id
+    LEFT JOIN stregsystem.stregsystem_category AS c ON oc.category_id = c.id
+    LEFT JOIN stregsystem.stregsystem_oldprice AS oldprice ON p.id = oldprice.product_id
     """
 
     product_source = SQLSource(connection=connection_f, query=product_query)
@@ -190,7 +203,7 @@ def createProductShit():
         newRow['type'] = type
         newRow['category'] = productTypeToCategory(type)
         newRow['product_name'] = name
-        newRow['price'] = row['price']
+        newRow['price'] = row['price'] / 100
         newRow['from_date'] = row['changed_on'] or datetime.now().date()
         product_dimension.scdensure(newRow)
 
@@ -199,12 +212,53 @@ def createProductShit():
         productTransform(row)
 
 createProductShit()
+connection_f.commit()
+connection_w.commit()
 
 
+
+UNKNOWN_MEMBER_ID = 99999999
+def createFactShit():
+    product_query = """
+        SELECT 
+            member_id, 
+            product_id, 
+            timestamp 
+        FROM stregsystem_sale
+        WHERE member_id > 0
+    """
+    product_source = SQLSource(connection=connection_f, query=product_query)
+
+    def factTransform(row):
+        newRow = dict()
+        
+        product_sk = product_dimension.lookupasof({'product_id': row['product_id']}, row['timestamp'].date(), (True, True))
+        product_row = product_dimension.getbykey(product_sk)
+        date_row = dateTransform(row['timestamp'].date())
+        timestamp_id = time_dimension.lookup(date_row)
+
+        member = member_dimension.getbykey(row['member_id'])
+        member_id = member['member_id'] 
+        if member_id is None:
+            member_id = UNKNOWN_MEMBER_ID
+            
+        newRow['member_id'] = member_id
+        newRow['time_id'] = timestamp_id
+        newRow['product_sk'] = product_sk
+        newRow['sale'] = product_row['price']
+        fact_table.insert(newRow)
+
+    for row in product_source:
+        factTransform(row)
+
+
+createFactShit()
+connection_f.commit()
+connection_w.commit()
 
 
 connection_f.commit()
-connection_f.close()
 connection_w.commit()
+connection_f.close()
 connection_w.close()
 
