@@ -18,7 +18,8 @@ def create_warehouse_tables(connection_w : ConnectionWrapper):
         """,
         """
         CREATE TABLE IF NOT EXISTS product (
-            product_id SERIAL PRIMARY KEY,
+            product_sk SERIAL PRIMARY KEY,
+            product_id INTEGER,
             product_name TEXT,
             type TEXT,
             category TEXT,
@@ -41,7 +42,7 @@ def create_warehouse_tables(connection_w : ConnectionWrapper):
         CREATE TABLE IF NOT EXISTS sale (
             sale_id SERIAL PRIMARY KEY,
             time_id INTEGER REFERENCES time(time_id),
-            product_id INTEGER REFERENCES product(product_id),
+            product_sk INTEGER REFERENCES product(product_sk),
             member_id INTEGER REFERENCES member(member_id),
             sale NUMERIC
         )
