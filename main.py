@@ -46,9 +46,9 @@ time_dimension = CachedDimension(
 
 product_dimension = SCDimension(
     name='product',
-    key='product_id',
-    attributes=['product_name', 'type', 'category', 'price', 'version', 'from_date', 'to_date'],
-    lookupatts=['product_name'],  
+    key='product_sk',
+    attributes=['product_id','product_name', 'type', 'category', 'price', 'version', 'from_date', 'to_date'],
+    lookupatts=['product_id'],  
     fromatt='from_date',
     toatt='to_date',
     fromfinder=pygrametl.datereader("from_date"),
@@ -109,7 +109,8 @@ def createProductShit():
             p.id AS product_id,
             p.name AS product_name,
             c.name AS category,
-            p.price,
+            -- use oldprice.price when present (historical value), otherwise current product price
+            COALESCE(oldprice.price, p.price) AS price,
             oldprice.changed_on AS changed_on
         FROM stregsystem.stregsystem_product AS p
         LEFT JOIN stregsystem.stregsystem_product_categories AS pc 
@@ -118,9 +119,10 @@ def createProductShit():
             ON pc.category_id = c.id
         LEFT JOIN stregsystem.stregsystem_oldprice AS oldprice
             ON p.id = oldprice.product_id
+        ORDER BY p.id, oldprice.changed_on ASC NULLS LAST
     """
 
-    member_source = SQLSource(connection=connection_f, query=product_query)
+    product_source = SQLSource(connection=connection_f, query=product_query)
 
     def productTypeToCategory(type: str) -> str:
         if type == "Alkoholdie varer": 
@@ -178,6 +180,7 @@ def createProductShit():
 
     def productTransform(row):
         newRow = dict()
+        newRow['product_id'] = row['product_id']
         name = removeHTMLTags(row['product_name'])
         name = normaliseLiter(name)
 
@@ -187,13 +190,12 @@ def createProductShit():
         newRow['type'] = type
         newRow['category'] = productTypeToCategory(type)
         newRow['product_name'] = name
-        newRow['price'] = row['price'] 
+        newRow['price'] = row['price']
         newRow['from_date'] = row['changed_on'] or datetime.now().date()
-        newRow['to_date'] = None
         product_dimension.scdensure(newRow)
 
 
-    for row in member_source:
+    for row in product_source:
         productTransform(row)
 
 createProductShit()
@@ -204,4 +206,4 @@ createProductShit()
 connection_f.commit()
 connection_f.close()
 connection_w.commit()
-connection_w.close()
+
