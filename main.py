@@ -3,45 +3,40 @@ import pygrametl
 from pygrametl.datasources import SQLSource
 from pygrametl.tables import CachedDimension, FactTable, SCDimension
 from datetime import datetime
+from utils import clean_html, infer_product_type, normalize_liters, product_type_to_category, transform_date
 from warehouse_tables import create_warehouse_tables
-import re
 
-fklub = psycopg2.connect(
-    host="localhost",
-    port=5432,
-    dbname="stregsystem",
-    user="myuser",
-    password="mypassword"
-)
-warehouse = psycopg2.connect(
-    host="localhost",
-    port=5432,
-    dbname="warehouse",
-    user="myuser",
-    password="mypassword"
-)
+fklub = {
+    'host': "localhost",
+    'port': 5432,
+    'dbname': "stregsystem",
+    'user': "myuser",
+    'password': "mypassword"
+}
 
-connection_f = pygrametl.ConnectionWrapper(fklub)
-connection_w = pygrametl.ConnectionWrapper(warehouse)
-connection_f.execute('SET search_path TO stregsystem')
+warehouse = {
+    'host': "localhost",
+    'port': 5432,
+    'dbname': "warehouse",
+    'user': "myuser",
+    'password': "mypassword"
+}
 
+src_conn = pygrametl.ConnectionWrapper(psycopg2.connect(**fklub))
+dst_conn = pygrametl.ConnectionWrapper(psycopg2.connect(**warehouse))
+src_conn.execute('SET search_path TO stregsystem')
 
-# DELETE WAREHOUSE TABLES IF THEY EXIST
-connection_w.execute("DROP TABLE IF EXISTS sale")
-connection_w.execute("DROP TABLE IF EXISTS time")
-connection_w.execute("DROP TABLE IF EXISTS product")
-connection_w.execute("DROP TABLE IF EXISTS member")
-connection_w.commit()
+# Reset warehouse tables
+for table in ['sale', 'time', 'product', 'member']:
+    dst_conn.execute(f"DROP TABLE IF EXISTS {table}")
+dst_conn.commit()
+create_warehouse_tables(dst_conn)
 
-# ENSURE THE TABLES EXIST
-create_warehouse_tables(connection_w)
-
-# DEFINE DIMENSIONS AND FACTS
 time_dimension = CachedDimension(
     name='time',
     key='time_id',
     attributes=['day', 'month', 'year', 'week', 'weekyear'],
-    targetconnection=connection_w
+    targetconnection=dst_conn
 )
 
 product_dimension = SCDimension(
@@ -53,67 +48,48 @@ product_dimension = SCDimension(
     toatt='to_date',
     fromfinder=pygrametl.datereader("from_date"),
     versionatt='version',
-    targetconnection=connection_w
+    targetconnection=dst_conn
 )
 
 member_dimension = CachedDimension(
     name='member',
     key='member_id',
     attributes=['active', 'account_created', 'gender', 'balance'],
-    targetconnection=connection_w
+    targetconnection=dst_conn
 )
 
 fact_table = FactTable(
     name='sale',
     keyrefs=['time_id', 'product_sk', 'member_id'],
     measures=['sale'],
-    targetconnection=connection_w
+    targetconnection=dst_conn
 )
 
+UNKNOWN_MEMBER_ID = 99999999
 
-def dateTransform(date):
-    newRow = dict()
-    newRow['day'] = date.day
-    newRow['month'] = date.month
-    newRow['year'] = date.year
-    newRow['week'] = date.isocalendar()[1]
-    newRow['weekyear'] = date.isocalendar()[0]
-    return newRow
-
-def createDateShit():
+def load_time_dimension():
     time_query = "SELECT * FROM stregsystem_sale"
-    time_source = SQLSource(connection=connection_f, query=time_query)
-    def dateTransformv2(row):
-        date: datetime = row['timestamp']
-        date_row = dateTransform(date)
-        time_dimension.ensure(date_row)
+    time_source = SQLSource(connection=src_conn, query=time_query)
     for row in time_source:
-        dateTransformv2(row)
+        date: datetime = row['timestamp']
+        date_row = transform_date(date)
+        time_dimension.ensure(date_row)
 
-def createMemberShit():
+
+def load_member_dimension():
     member_query = "SELECT * FROM stregsystem_member"
-    member_source = SQLSource(connection=connection_f, query=member_query)
-    def memberTransform(row):
+    member_source = SQLSource(connection=src_conn, query=member_query)
+    for row in member_source:
         newRow = dict()
         newRow['active'] = row['active']
         newRow['account_created'] = row['year']
         newRow['gender'] = row['gender']
         newRow['balance'] = row['balance'] / 100
         member_dimension.ensure(newRow)
-    for row in member_source:
-        memberTransform(row)
-    
-    member_dimension.insert({'member_id': 99999999, 'active': False, 'account_created': 1970, 'gender': 'U', 'balance': 0.0})
 
-createMemberShit()
-connection_f.commit()
-connection_w.commit()
-createDateShit()
-connection_f.commit()
-connection_w.commit()
+    member_dimension.insert({'member_id': UNKNOWN_MEMBER_ID, 'active': False, 'account_created': 1970, 'gender': 'U', 'balance': 0.0})
 
-
-def createProductShit():
+def load_product_dimension():
     product_query = """
     WITH one_category AS (
         SELECT DISTINCT ON (pc.product_id)
@@ -135,90 +111,26 @@ def createProductShit():
     LEFT JOIN stregsystem.stregsystem_oldprice AS oldprice ON p.id = oldprice.product_id
     """
 
-    product_source = SQLSource(connection=connection_f, query=product_query)
-
-    def productTypeToCategory(type: str) -> str:
-        if type == "Alkoholdie varer": 
-            raise ValueError("Alkoholdie varer should not be in the dataset")
-        cases = {
-            "Sodavand" : "Sodavand",
-            "Vitamin Vand" : "Andet",
-            "Øl" : "Øl", 
-            "Special Øl": "Øl", 
-            "Kaffe": "Koffein", 
-            "Hård spiritus": "Spiritus", 
-            "Spiritus": "Spiritus",  
-            "Spiselige varer": "Mad", 
-            "Energidrik": "Koffein",
-            "Mælk": "Andet",
-            "Events" : "Events",
-            "Andet": "Andet",
-            "Mad": "Mad",
-            "Ukategoriseret": "Ukategoriseret"
-        }
-        return cases[type]
-    
-    def inferTypeFromName(name: str) -> str:
-        name = name.lower()
-        keywords = [
-            (["stripper kassen", "football",  "f-dag", "f-lan", "f-julefrokost", "f-sportsdag", "f-acking", "kandidat", "kort fyttetur - 2 dage", "island tilbud!", "feaster", "famlefest", "special hyttetur", "fastelavn", "fragelse", "gratis foobar", "fredagsfranskbrød", "konsulent for en aften", "kamstrup foobar", "arrangement", "svedhytte"], "Events"),
-            (["øl", "oe", "beer", "carlsberg", "porter", "weiser", "ale", "tuborg", "humle"], "Øl"),
-            (["whisky", "whiskey", "vodka", "gin", "rom", "rum", "snaps"], "Hård spiritus"),
-            (["vin", "alkohol", "cider", "somersby"], "Spiritus"),
-            (["cola", "fanta", "sodavand", "soda"], "Sodavand"),
-            (["kaffe"], "Kaffe"),
-            (["energi", "energy", "red bull", "x-ray",  "one engergydrink", "jolt"], "Energidrik"),
-            (["vand", "water"], "Vitamin Vand"),
-            (["mælk", "milk", "skumme", "cultura", "yoghurt", "kakao", "cacao", "cocio"], "Mælk"),
-            (["brød", "popcorn", "barbells", "barebells", "chokolade", "slik", "chips", "saltstænger", "hotdog"], "Mad"),
-            (["juice", "æblemost", "ingefær", "pant"], "Andet"),
-        ]
-        for keys, type_name in keywords:
-            if any(k in name for k in keys):
-                return type_name
-        return "Ukategoriseret"
-    
-    def removeHTMLTags(str: str) -> str:
-        clean = re.compile('<.*?>')
-        return re.sub(clean, '', str)
-    
-    def normaliseLiter(str: str) -> str:
-        if "½L" in str:
-            return str.replace("½L", "500ml")
-        if "¼L" in str:
-            return str.replace("¼L", "250ml")
-        if "1L" in str:
-            return str.replace("1L", "1000ml")
-        return str
-
-    def productTransform(row):
+    product_source = SQLSource(connection=src_conn, query=product_query)
+    for row in product_source:
         newRow = dict()
         newRow['product_id'] = row['product_id']
-        name = removeHTMLTags(row['product_name'])
-        name = normaliseLiter(name)
+        name = clean_html(row['product_name'])
+        name = normalize_liters(name)
 
         type = row['category']
         if type == None:
-            type = inferTypeFromName(name)
+            type = infer_product_type(name)
+
         newRow['type'] = type
-        newRow['category'] = productTypeToCategory(type)
+        newRow['category'] = product_type_to_category(type)
         newRow['product_name'] = name
         newRow['price'] = row['price'] / 100
         newRow['from_date'] = row['changed_on'] or datetime.now().date()
         product_dimension.scdensure(newRow)
 
 
-    for row in product_source:
-        productTransform(row)
-
-createProductShit()
-connection_f.commit()
-connection_w.commit()
-
-
-
-UNKNOWN_MEMBER_ID = 99999999
-def createFactShit():
+def load_sales_fact():
     product_query = """
         SELECT 
             member_id, 
@@ -227,14 +139,12 @@ def createFactShit():
         FROM stregsystem_sale
         WHERE member_id > 0
     """
-    product_source = SQLSource(connection=connection_f, query=product_query)
-
-    def factTransform(row):
+    product_source = SQLSource(connection=src_conn, query=product_query)
+    for row in product_source:
         newRow = dict()
-        
         product_sk = product_dimension.lookupasof({'product_id': row['product_id']}, row['timestamp'].date(), (True, True))
         product_row = product_dimension.getbykey(product_sk)
-        date_row = dateTransform(row['timestamp'].date())
+        date_row = transform_date(row['timestamp'].date())
         timestamp_id = time_dimension.lookup(date_row)
 
         member = member_dimension.getbykey(row['member_id'])
@@ -248,17 +158,15 @@ def createFactShit():
         newRow['sale'] = product_row['price']
         fact_table.insert(newRow)
 
-    for row in product_source:
-        factTransform(row)
 
 
-createFactShit()
-connection_f.commit()
-connection_w.commit()
+def run_etl():
+    load_member_dimension()
+    load_time_dimension()
+    load_product_dimension()
+    load_sales_fact()
 
-
-connection_f.commit()
-connection_w.commit()
-connection_f.close()
-connection_w.close()
-
+if __name__ == "__main__":
+    run_etl()
+    src_conn.close()
+    dst_conn.close()
