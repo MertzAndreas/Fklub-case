@@ -165,6 +165,7 @@ def run_etl():
     load_time_dimension()
     load_product_dimension()
     load_sales_fact()
+    dst_conn.commit()
 
 if __name__ == "__main__":
     run_etl()
